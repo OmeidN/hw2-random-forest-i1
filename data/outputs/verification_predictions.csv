@@ -1,0 +1,3 @@
+true_class,predicted_class,prob_class_0,prob_class_1,correct
+1,1,0.04016666666666666,0.9598333333333332,True
+0,0,0.6641666666666667,0.3358333333333334,True
