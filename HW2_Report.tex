@@ -1,0 +1,774 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{setspace}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{titlesec}
+\usepackage{enumitem}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    citecolor=blue
+}
+
+\setstretch{1.08}
+\setlength{\parskip}{0.5em}
+\setlength{\parindent}{0pt}
+
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.5em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{0.5em}{}
+
+\lstdefinestyle{pythonstyle}{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue},
+    commentstyle=\color{teal},
+    stringstyle=\color{red!70!black},
+    showstringspaces=false,
+    breaklines=true,
+    frame=single,
+    columns=fullflexible
+}
+
+\begin{document}
+
+\begin{titlepage}
+\centering
+\vspace*{\fill}
+{\LARGE \textbf{HW 2 Random Forest ML Pipeline}}\\[2em]
+{\large CSC 695 / 895}\\[0.5em]
+Spring 2026\\[1.5em]
+\textbf{Date:} 3/13/2026\\[1em]
+\textbf{Name:} Omeid Nadery\\[0.5em]
+\textbf{Email:} [Your Email]\\
+\vspace*{\fill}
+\end{titlepage}
+
+\section{Audit of Original Database}
+
+The original dataset has 871 samples and 609 columns. One column is the label and the rest are gene expression features, so there are 608 features. There are two classes, with label 1 for the i1 neuron cluster and label 0 for non-i1. The dataset is unbalanced, with most samples in class 0, about 90\%, and about 10\% in class 1. All feature columns are numeric. The notebook audit checks for missing values and none were reported. No columns were flagged as potentially personally identifying, for example no columns with names such as \texttt{id}, \texttt{name}, or \texttt{patient}. The source file is \texttt{Original training DB i1 cluster.csv}.
+
+The number of samples, 871, is below the standard of 10 times the number of features, 608, so the dataset is high-dimensional relative to sample size. Cross-validation and OOB evaluation are therefore used to assess performance without relying on a single train/test split. Data provenance: all statistics and results in this report use this original dataset and the train/verification split described in the next section; parameters and settings are noted in table captions and section text.
+
+Relevant code for loading and auditing the raw data:
+
+\begin{lstlisting}[style=pythonstyle]
+def load_data(csv_path):
+    path = Path(csv_path)
+    return pd.read_csv(path)
+
+def basic_audit(df, label_col):
+    n_samples = len(df)
+    feature_cols = [c for c in df.columns if c != label_col]
+    n_features = len(feature_cols)
+    class_counts = df[label_col].value_counts().sort_index().to_dict()
+    missing_total = int(df.isna().sum().sum())
+    # ... dtype check, PII heuristic, 10x features rule
+    return {"n_samples": n_samples, "n_features": n_features,
+            "class_counts": class_counts, ...}
+\end{lstlisting}
+
+\textit{Comment:} \texttt{load\_data} reads the CSV; \texttt{basic\_audit} computes sample/feature counts, class distribution, missing values, and flags (e.g., high-dimensionality, imbalance) used to populate Table 1 and the narrative above.
+
+\begin{table}[H]
+\centering
+\caption{Original dataset statistics. Data: Original training DB i1 cluster.csv; 871 samples, 608 features, 2 classes (0: non-i1, 1: i1).}
+\begin{tabular}{ll}
+\toprule
+\textbf{Statistic} & \textbf{Value} \\
+\midrule
+Number of samples & 871 \\
+Number of features & 608 \\
+Number of classes & 2 \\
+Class 0 (non-i1) & 781 \\
+Class 1 (i1) & 90 \\
+Feature types & Numeric \\
+Missing values & 0 \\
+Dataset source & Original training DB i1 cluster.csv \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Creation of Training DB and Verification DB}
+
+Two random samples were removed to form the verification set, one with class 1 and one with class 0, so the verification set has two samples, one per class. Holding out one sample per class ensures that the verification set is balanced and that the model can be checked on both i1 and non-i1 examples. The training set is the original dataset minus these two samples, so it has 869 samples. The same random seed, 42, was used so the split is reproducible.
+
+Relevant code for the train/verification split:
+
+\begin{lstlisting}[style=pythonstyle]
+def split_train_verification(df, label_col, random_state=RANDOM_STATE):
+    pos = df[df[label_col] == POS_LABEL]
+    neg = df[df[label_col] == NEG_LABEL]
+    pos_sample = pos.sample(n=1, random_state=random_state)
+    neg_sample = neg.sample(n=1, random_state=random_state)
+    verification_df = pd.concat([pos_sample, neg_sample]).copy()
+    training_df = df.drop(index=verification_df.index).copy()
+    return training_df, verification_df
+\end{lstlisting}
+
+\textit{Comment:} One random sample from each class is drawn with a fixed seed; the rest stays as training data. This yields the 869 vs 2 split and reproducible Tables 2 and 3.
+
+\begin{table}[H]
+\centering
+\caption{Training dataset statistics.}
+\begin{tabular}{ll}
+\toprule
+\textbf{Statistic} & \textbf{Value} \\
+\midrule
+Number of samples & 869 \\
+Number of features & 608 \\
+Class 0 count & 780 \\
+Class 1 count & 89 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Verification dataset statistics.}
+\begin{tabular}{ll}
+\toprule
+\textbf{Statistic} & \textbf{Value} \\
+\midrule
+Number of samples & 2 \\
+Class 0 count & 1 \\
+Class 1 count & 1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Software Tools}
+
+Paths and random seed are centralized so the pipeline is reproducible:
+
+\begin{lstlisting}[style=pythonstyle]
+# config.py
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+RAW_CSV_PATH = PROJECT_ROOT / "data" / "raw" / "Original training DB i1 cluster.csv"
+RANDOM_STATE = 42
+\end{lstlisting}
+
+\textit{Comment:} Using a single project root and fixed \texttt{RANDOM\_STATE} ensures the same train/verification split and CV folds across runs.
+
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Python} -- Runtime and scripting.
+    \item \textbf{Jupyter Notebook} -- Interactive workflow and documentation.
+    \item \textbf{scikit-learn} -- \texttt{RandomForestClassifier} for training, \texttt{StratifiedKFold} for fold indices, and metrics including confusion matrix, accuracy, precision, recall, and F1.
+    \item \textbf{pandas} -- Loading CSV data, building tables, and saving outputs.
+    \item \textbf{NumPy} -- Numerical arrays and random state handling.
+    \item \textbf{matplotlib / seaborn} -- Top-10 feature importance plot.
+    \item \textbf{Overleaf LaTeX} -- Formatted this PDF.
+\end{itemize}
+
+\section{Experimental Methods and Setup}
+
+\textbf{Method 1, Random Forest with OOB estimation.} Out-of-bag (OOB) estimation uses the fact that each tree in the forest is trained on a bootstrap sample of the data, so about one-third of the training samples are OOB for each tree. Those samples get predictions from the trees that did not use them, giving an internal validation estimate without a separate holdout set. A grid search was run over \texttt{n\_estimators} (200, 500, 1000), \texttt{max\_features} (mtry: \texttt{"sqrt"}, 2$\times$\texttt{sqrt} $\approx$ 49, 5$\times$\texttt{sqrt} $\approx$ 123, and 0.1 as fraction), and \texttt{min\_samples\_leaf} (1, 2, 5). Each model used \texttt{RandomForestClassifier} with \texttt{bootstrap=True} and \texttt{oob\_score=True}. OOB predictions were taken from the out-of-bag decision function and thresholded at 0.5 (scikit-learn's fixed classification cutoff) to get predicted classes. From those, confusion matrix, accuracy, precision, recall, and F1 were computed. The best model was chosen by highest F1 because the dataset is imbalanced and has relatively few i1 samples. F1 balances precision and recall and is more informative than accuracy when the positive class is rare.
+
+Key OOB grid and prediction logic:
+
+\begin{lstlisting}[style=pythonstyle]
+n_features = X_train.shape[1]
+sqrt_n = math.sqrt(n_features)
+max_features_list = ["sqrt", min(int(2 * sqrt_n), n_features),
+                    min(int(5 * sqrt_n), n_features), 0.1]
+# ... loop over n_estimators, max_features, min_samples_leaf
+clf = RandomForestClassifier(n_estimators=..., max_features=...,
+    bootstrap=True, oob_score=True, ...)
+clf.fit(X_train, y_train)
+oob_probs = clf.oob_decision_function_[:, 1]
+oob_pred = (oob_probs >= 0.5).astype(int)
+metrics = compute_metrics(y_train, oob_pred)
+\end{lstlisting}
+
+\textit{Comment:} The mtry grid is built from \texttt{sqrt} and multiples (49, 123 for 608 features); each model is evaluated via OOB class-1 probabilities thresholded at 0.5, then metrics (including F1) are computed for model selection.
+
+\textbf{Method 2, Manual 3-fold cross-validation.} This method estimates how the model generalizes to unseen data by training on two-thirds of the data and evaluating on the remaining third, repeated three times so each sample is in the test set exactly once. \texttt{StratifiedKFold} with 3 splits and a fixed random state was used only to get train and test indices, without using a one-line CV shortcut. For each fold, a separate \texttt{RandomForestClassifier} was trained on the training indices and predictions were made on the test indices. Confusion matrix, accuracy, precision, recall, and F1 were computed per fold. Final accuracy and F1 are the averages over the three folds. The same hyperparameters as the best OOB model were used so that the CV results are comparable.
+
+Key 3-fold CV loop (indices only; training and metrics are manual):
+
+\begin{lstlisting}[style=pythonstyle]
+skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=random_state)
+for fold_num, (train_idx, test_idx) in enumerate(skf.split(X, y), start=1):
+    X_train_fold = X.iloc[train_idx]
+    X_test_fold = X.iloc[test_idx]
+    y_train_fold = y.iloc[train_idx]
+    y_test_fold = y.iloc[test_idx]
+    clf = RandomForestClassifier(n_estimators=..., max_features=..., ...)
+    clf.fit(X_train_fold, y_train_fold)
+    y_pred = clf.predict(X_test_fold)
+    metrics = compute_metrics(y_test_fold, y_pred)
+\end{lstlisting}
+
+\textit{Comment:} \texttt{StratifiedKFold} only supplies fold indices; a separate RF is trained per fold and evaluated on that fold's test set, yielding the per-fold accuracy and F1 reported in Section 5.
+
+\section{Actual Results of RF Training}
+
+\textbf{Method 1 (OOB).} The best hyperparameters were \texttt{n\_estimators = 1000}, \texttt{max\_features = 123} (5$\times$\texttt{sqrt}), and \texttt{min\_samples\_leaf = 1}.
+
+\begin{table}[H]
+\centering
+\caption{Best OOB confusion matrix. Full sample counts (not normalized). Rows = true class, columns = predicted class (axes: true vs.\ classified), order 0 then 1.}
+\begin{tabular}{lcc}
+\toprule
+ & \textbf{Predicted 0} & \textbf{Predicted 1} \\
+\midrule
+\textbf{True 0} & 779 & 1 \\
+\textbf{True 1} & 10 & 79 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Best OOB performance metrics (5 decimal places). Model: n\_estimators=1000, max\_features=123, min\_samples\_leaf=1; threshold 0.5.}
+\begin{tabular}{ll}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Accuracy & 0.98734 \\
+Precision & 0.98750 \\
+Recall & 0.88764 \\
+F1 & 0.93491 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Relevant code for selecting the best OOB model and for computing metrics (used for both OOB and CV):
+
+\begin{lstlisting}[style=pythonstyle]
+def get_best_oob_model(results, sort_by="f1"):
+    best = max(results, key=lambda x: x[sort_by])
+    return best
+
+def compute_metrics(y_true, y_pred, pos_label=1):
+    cm = confusion_matrix(y_true, y_pred)
+    return {"confusion_matrix": cm,
+            "accuracy": accuracy_score(y_true, y_pred),
+            "precision": precision_score(..., pos_label=pos_label, zero_division=0),
+            "recall": recall_score(..., pos_label=pos_label, zero_division=0),
+            "f1": f1_score(..., pos_label=pos_label, zero_division=0)}
+\end{lstlisting}
+
+\textit{Comment:} The result with highest F1 is chosen as the best OOB model; its confusion matrix and accuracy (and precision, recall, F1) are those in the tables above. All metrics are computed via scikit-learn with the positive class set to 1 (i1).
+
+\textbf{Method 2 (3-fold CV).} Per-fold results are shown below.
+
+\begin{table}[H]
+\centering
+\caption{Manual 3-fold CV results per fold. Same hyperparameters as best OOB model; accuracy and F1 to 5 decimal places.}
+\begin{tabular}{ccc}
+\toprule
+\textbf{Fold} & \textbf{Accuracy} & \textbf{F1} \\
+\midrule
+1 & 0.97931 & 0.88889 \\
+2 & 0.98621 & 0.93103 \\
+3 & 0.98962 & 0.94545 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Mean accuracy was 0.98505 and mean F1 was 0.92179. Per-fold precision and recall, to 5 decimal places, are available in the notebook. Fold 1 had recall 0.80 and fold 3 had recall about 0.90, so there is some variance in how many i1 samples are correctly identified across folds.
+
+\textbf{Interpretation of the best OOB confusion matrix.} The model correctly classified 779 of 780 non-i1 samples (one false positive) and 79 of 89 i1 samples (10 false negatives). So most errors are missed i1 cases rather than non-i1 samples wrongly labeled as i1. That pattern is common with imbalanced data when the minority class is harder to separate. Precision (0.98750) is higher than recall (0.88764) because the model is somewhat conservative in predicting class 1; when it does predict i1, it is usually right, but it misses some true i1 samples.
+
+\textbf{Comparison.} OOB and 3-fold CV both give accuracy around 98--99\% and F1 around 0.92--0.94. OOB is slightly higher (0.98734 vs.\ 0.98505) and the best OOB F1 (0.93491) is a bit higher than the mean CV F1 (0.92179). The two methods agree that the model performs well and is not strongly overfitting. The small gap between OOB and CV is consistent with OOB being a slightly optimistic estimate compared to true held-out evaluation.
+
+\section{Feature Ranking}
+
+\textbf{1. How the best trained RF was obtained.} The best trained RF was obtained in Section~5 by running a grid search over \texttt{n\_estimators} (200, 500, 1000), \texttt{max\_features} (mtry: sqrt, 2$\times$sqrt, 5$\times$sqrt, 0.1), and \texttt{min\_samples\_leaf} (1, 2, 5), evaluating each model with OOB predictions, and selecting the configuration with highest OOB F1. That model (\texttt{n\_estimators=1000}, \texttt{max\_features=123}, \texttt{min\_samples\_leaf=1}) is the one used for feature ranking below.
+
+\textbf{2. Top 10 ranked features (Gini method for Scikit).} Feature importance was computed using the \textbf{Gini method} (scikit-learn: total decrease in node impurity from splits on each feature across all trees). The top 10 ranked features are shown in Table 4 and Figure 1.
+
+\textbf{3. Code snippets.}
+
+\begin{lstlisting}[style=pythonstyle]
+def get_feature_importance_table(model, feature_names):
+    importance_df = pd.DataFrame({
+        "feature": feature_names,
+        "gini_importance": model.feature_importances_,
+    }).sort_values("gini_importance", ascending=False)
+    return importance_df.reset_index(drop=True)
+\end{lstlisting}
+
+\textit{Comment:} \texttt{feature\_importances\_} gives Gini importance per feature; we sort descending to produce the ranking in Table 4 and Figure 1.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.88\textwidth]{top10_features.png}
+    \caption{Top 10 features ranked by Random Forest Gini importance.}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{Top 10 ranked features by Gini importance (best OOB model; measure: total decrease in node impurity across trees).}
+\begin{tabular}{clc}
+\toprule
+\textbf{Rank} & \textbf{Feature} & \textbf{Gini importance} \\
+\midrule
+1  & COL5A2.1 & 0.12725 \\
+2  & COL5A2.2 & 0.12706 \\
+3  & COL5A2   & 0.11970 \\
+4  & NDNF.2   & 0.04422 \\
+5  & MYO16    & 0.03574 \\
+6  & NDNF.1   & 0.03569 \\
+7  & NDNF     & 0.03266 \\
+8  & FAT1     & 0.03151 \\
+9  & NPNT     & 0.02999 \\
+10 & CBLN4    & 0.02176 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{4. How this helps explain how the RF worked.} The ranking shows which features the trees relied on most when splitting nodes, and thus which gene expression levels drove the model's i1 vs.\ non-i1 decisions. The COL5A2 family (top three) dominates, so the RF effectively uses collagen-related and NDNF/FAT1 expression to separate i1 from non-i1; this makes the model's behavior interpretable in terms of known biology.
+
+\textbf{5. What I learned doing this step.} I learned that the learned feature importance is interpretable and recovers known i1 markers (COL5A2, NDNF, FAT1) from the literature without being given that information during training, which supports that the RF is capturing biologically meaningful signal rather than noise. The ranking also shows a clear dominant cluster (COL5A2 family $\approx$ 37\% of top-10 Gini importance), which helps justify using a small subset of features for interpretation or production.
+
+\textbf{6. Comparison with ground truth from biology paper (i1 cluster).} The ground truth established in Aevermann et al.\ for the i1 cluster is that it is a human MTG cortical layer 1 GABAergic interneuron that selectively expresses COL5A2, NDNF, and FAT1 mRNAs. Our top 10 ranked features align with this: COL5A2 appears as the top three (COL5A2, COL5A2.1, COL5A2.2; same prefix treated as one gene family), NDNF appears in three entries (NDNF, NDNF.1, NDNF.2), and FAT1 appears once. Thus the model's most important features correspond to the biological markers from the paper. MYO16, NPNT, and CBLN4 in the top 10 may be additional i1-related genes or correlated with the main markers.
+
+\textbf{Production suggestion:} For a tradeoff between fewer features and accuracy, I would suggest using the top 5--10 ranked features in production; the top 3 alone may sacrifice some accuracy, while the full top 10 balances interpretability and performance (validatable on held-out data).
+
+\section{RF Runtime Test}
+
+The RF run-time engine is the best trained model from Section~5 (OOB grid), with key hyperparameters \texttt{n\_estimators = 1000}, \texttt{max\_features = 123}, \texttt{min\_samples\_leaf = 1}, and classification cutoff 0.5 (scikit-learn default). One positive (i1, class 1) and one negative (non-i1, class 0) sample from the verification database were run through this model in predict mode to obtain the predicted class and class probabilities for each sample.
+
+Relevant code for verification predictions:
+
+\begin{lstlisting}[style=pythonstyle]
+def run_verification_predictions(model, X_verify, y_verify):
+    pred = model.predict(X_verify)
+    prob = model.predict_proba(X_verify)
+    results = pd.DataFrame({
+        "true_class": y_verify.values,
+        "predicted_class": pred,
+        "prob_class_0": prob[:, 0],
+        "prob_class_1": prob[:, 1],
+        "correct": (pred == y_verify.values),
+    })
+    return results
+\end{lstlisting}
+
+\textit{Comment:} The best fitted RF is run on the two held-out samples; \texttt{predict\_proba} gives the probabilities reported in Table 5 and used to confirm both predictions are correct.
+
+\begin{table}[H]
+\centering
+\caption{Verification sample predictions. Class decision and probability for each class (prob\_class\_0, prob\_class\_1) from the run-time RF; both samples from verification database.}
+\begin{tabular}{cccccc}
+\toprule
+\textbf{Sample} & \textbf{True label} & \textbf{Predicted label} & \textbf{P(class 0)} & \textbf{P(class 1)} & \textbf{Correct} \\
+\midrule
+1 & 1 & 1 & 0.03100 & 0.96900 & Yes \\
+2 & 0 & 0 & 0.74000 & 0.26000 & Yes \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Comparison with ground truth:} Both predictions are correct. Sample 1 (true i1) is predicted as class 1; sample 2 (true non-i1) is predicted as class 0. \textbf{Confidence in RF predictions:} My confidence is \emph{high} for the i1 sample (probability for class 1 is 0.96900) and \emph{moderate} for the non-i1 sample (probability for class 0 is 0.74000). I determine this from the predicted class probabilities output by the model and from the fact that both predictions match ground truth; the lower probability on the non-i1 sample suggests that sample may lie closer to the decision boundary. Overall, the runtime test shows that the best model generalizes to the held-out verification set.
+
+\section{Summary}
+
+The pipeline audited the original i1 cluster dataset (871 samples, 608 features, two classes), built a training set of 869 samples and a two-sample verification set with one sample per class, and trained Random Forest models using OOB estimation and manual 3-fold CV. The grid used mtry values \texttt{sqrt}, 2$\times$\texttt{sqrt} (49), 5$\times$\texttt{sqrt} (123), and 0.1. The best model (1000 trees, \texttt{max\_features = 123} [5$\times$\texttt{sqrt}], \texttt{min\_samples\_leaf = 1}) achieved OOB accuracy 0.98734 and F1 0.93491, with mean CV accuracy 0.98505 and mean CV F1 0.92179. Gini-based feature ranking placed the COL5A2 family, NDNF, and FAT1 at the top, matching known i1 markers from the literature. Both verification samples were classified correctly. These results support that the Random Forest pipeline is suitable for this classification task and that the learned feature importance is biologically interpretable.
+
+\section{References and Resources}
+
+\textbf{Papers and tools used:}
+\begin{itemize}[leftmargin=1.5em]
+    \item Aevermann et al.\ (2018). \textit{Cell type discovery using single-cell transcriptomics: implications for ontological representation}. Human Molecular Genetics. (Data source and biology ground truth for i1 cluster.)
+    \item Scikit-learn documentation. \url{https://scikit-learn.org/}
+    \item ChatGPT and Cursor (GenAI) were used for report structure and code assistance; see Appendix~I.
+\end{itemize}
+
+\textbf{People who helped:} None besides GenAI tools described in Appendix~I.
+
+\appendix
+
+\section{Appendix I: GenAI Use}
+
+\textbf{Tools used:} ChatGPT / Cursor
+
+\textbf{Tasks assisted with:}
+\begin{itemize}[leftmargin=1.5em]
+    \item Helped structure the Random Forest pipeline.
+    \item Helped review report organization and wording.
+    \item Helped debug parts of the Python implementation.
+\end{itemize}
+
+\textbf{Example prompts used:}
+\begin{itemize}[leftmargin=1.5em]
+    \item ``How should I structure a Random Forest pipeline for this homework?''
+    \item ``Can you help me organize my report according to the assignment guidelines?''
+    \item ``Can you review whether my metrics and feature ranking look correct?''
+    \item ``Can you give me overleaf latex code to organize me report into a pdf.''
+\end{itemize}
+
+\textbf{Usefulness rating:} 5/5 (Saved a lot of time formatting the file structure and report structure)
+
+\textbf{Notes:} Use of AI during this homework was mainly to help structure the project and report. ChatGPT was used to build the file structure and help prompt Cursor to help build and debug code snippets. Once the results from the tests were summarized, ChatGPT was used to format the contents of the final report into LaTeX Overleaf code for a clean PDF structure.
+
+\section{Appendix II: Full Code}
+
+Code is included in PDF format per instructions. Purpose: HW~2 Random Forest ML pipeline for i1 cluster classification. 
+Author: Omeid Nadery. Date: 3/13/2026. Key snippets appear in the main body; full code is below with module docstrings documenting purpose and behavior.
+
+\subsection*{File: config.py}
+
+\begin{lstlisting}[style=pythonstyle]
+"""
+Project configuration for HW2 Random Forest i1 cluster pipeline.
+Uses pathlib for cross-platform paths (Windows/Mac/Linux).
+"""
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Project root and directories
+# ---------------------------------------------------------------------------
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
+PROCESSED_DATA_DIR = PROJECT_ROOT / "data" / "processed"
+OUTPUT_DATA_DIR = PROJECT_ROOT / "data" / "outputs"
+FIGURES_DIR = PROJECT_ROOT / "reports" / "figures"
+
+RAW_CSV_PATH = RAW_DATA_DIR / "Original training DB i1 cluster.csv"
+TRAIN_CSV_PATH = PROCESSED_DATA_DIR / "training_db.csv"
+VERIFY_CSV_PATH = PROCESSED_DATA_DIR / "verification_db.csv"
+
+RANDOM_STATE = 42
+LABEL_COL = "label"
+POS_LABEL = 1
+NEG_LABEL = 0
+\end{lstlisting}
+
+\subsection*{File: data\_utils.py}
+
+\begin{lstlisting}[style=pythonstyle]
+"""
+Data loading, auditing, and train/verification split utilities.
+"""
+import pandas as pd
+import numpy as np
+from pathlib import Path
+from src.config import RANDOM_STATE, POS_LABEL, NEG_LABEL
+
+def load_data(csv_path):
+    path = Path(csv_path)
+    if not path.exists():
+        raise FileNotFoundError(f"CSV not found: {path}")
+    return pd.read_csv(path)
+
+def detect_label_column(df):
+    for c in df.columns:
+        if str(c).strip().lower() == "label":
+            return c
+    if "label" in df.columns: return "label"
+    if "Label" in df.columns: return "Label"
+    raise ValueError("No label column found.")
+
+def basic_audit(df, label_col):
+    n_samples = len(df)
+    feature_cols = [c for c in df.columns if c != label_col]
+    n_features = len(feature_cols)
+    class_counts = df[label_col].value_counts().sort_index().to_dict()
+    total = n_samples
+    class_pct = {k: (v / total * 100) if total else 0 for k, v in class_counts.items()}
+    missing_total = int(df.isna().sum().sum())
+    X = df[feature_cols]
+    dtypes = X.dtypes
+    all_numeric = all(pd.api.types.is_numeric_dtype(d) for d in dtypes)
+    dtype_summary = {str(k): int(v) for k, v in dtypes.value_counts().to_dict().items()}
+    pii_heuristic = [c for c in df.columns if any(x in str(c).lower()
+        for x in ["id", "name", "patient", "sample_id", "subject"])]
+    samples_ok = n_samples >= 10 * n_features if n_features else True
+    min_pct = min(class_pct.values()) if class_pct else 0
+    unbalanced = min_pct < 10.0
+    return {"n_samples": n_samples, "n_features": n_features, "class_counts": class_counts,
+        "class_pct": class_pct, "missing_total": missing_total, "all_features_numeric": all_numeric,
+        "pii_heuristic_columns": pii_heuristic, "samples_at_least_10x_features": samples_ok,
+        "class_unbalanced_under_10pct": unbalanced, "feature_columns": feature_cols}
+
+def audit_summary_table(df, label_col):
+    audit = basic_audit(df, label_col)
+    rows = [("Number of samples", audit["n_samples"]), ("Number of features", audit["n_features"]),
+        ("Class counts", str(audit["class_counts"])), ("Missing values (total)", audit["missing_total"]),
+        ("All features numeric", audit["all_features_numeric"]),
+        ("Samples >= 10x features", audit["samples_at_least_10x_features"]),
+        ("Class unbalanced (<10%)", audit["class_unbalanced_under_10pct"])]
+    return pd.DataFrame(rows, columns=["Audit item", "Value"])
+
+def split_train_verification(df, label_col, random_state=RANDOM_STATE):
+    pos = df[df[label_col] == POS_LABEL]
+    neg = df[df[label_col] == NEG_LABEL]
+    pos_sample = pos.sample(n=1, random_state=random_state)
+    neg_sample = neg.sample(n=1, random_state=random_state)
+    verification_df = pd.concat([pos_sample, neg_sample]).copy()
+    training_df = df.drop(index=verification_df.index).copy()
+    return training_df, verification_df
+
+def get_xy(df, label_col):
+    X = df.drop(columns=[label_col]).copy()
+    y = df[label_col].copy()
+    return X, y
+
+def save_dataframe(df, path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+\end{lstlisting}
+
+\subsection*{File: rf\_oob.py}
+
+\begin{lstlisting}[style=pythonstyle]
+"""
+Random Forest training with Out-of-Bag (OOB) estimation.
+Grid search over hyperparameters; each model uses OOB for evaluation.
+"""
+import math
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from src.metrics_utils import compute_metrics
+
+def run_oob_grid(X_train, y_train, random_state=42):
+    results = []
+    n_features = X_train.shape[1]
+    sqrt_n = math.sqrt(n_features)
+    # mtry: sqrt, 2*sqrt, 5*sqrt (capped at n_features), and 0.1 (10% fraction)
+    max_features_list = [
+        "sqrt",
+        min(int(2 * sqrt_n), n_features),
+        min(int(5 * sqrt_n), n_features),
+        0.1,
+    ]
+    n_estimators_list = [200, 500, 1000]
+    min_samples_leaf_list = [1, 2, 5]
+
+    for n_estimators in n_estimators_list:
+        for max_features in max_features_list:
+            for min_samples_leaf in min_samples_leaf_list:
+                clf = RandomForestClassifier(
+                    n_estimators=n_estimators,
+                    max_features=max_features,
+                    min_samples_leaf=min_samples_leaf,
+                    bootstrap=True,
+                    oob_score=True,
+                    random_state=random_state,
+                    n_jobs=-1,
+                )
+                clf.fit(X_train, y_train)
+                oob_probs = clf.oob_decision_function_[:, 1]
+                oob_pred = (oob_probs >= 0.5).astype(int)
+                metrics = compute_metrics(y_train, oob_pred)
+                results.append({
+                    "n_estimators": n_estimators,
+                    "max_features": max_features,
+                    "min_samples_leaf": min_samples_leaf,
+                    "oob_score_builtin": clf.oob_score_,
+                    "accuracy": metrics["accuracy"],
+                    "precision": metrics["precision"],
+                    "recall": metrics["recall"],
+                    "f1": metrics["f1"],
+                    "confusion_matrix": metrics["confusion_matrix"],
+                    "model": clf,
+                })
+    return results
+
+def oob_results_to_dataframe(results):
+    rows = []
+    for r in results:
+        rows.append({"n_estimators": r["n_estimators"], "max_features": str(r["max_features"]),
+            "min_samples_leaf": r["min_samples_leaf"], "oob_score": r["oob_score_builtin"],
+            "accuracy": r["accuracy"], "precision": r["precision"], "recall": r["recall"], "f1": r["f1"]})
+    return pd.DataFrame(rows)
+
+def get_best_oob_model(results, sort_by="f1"):
+    if not results: return None
+    valid = [s for s in sort_by.split(",") if s in results[0]]
+    sort_key = valid[0] if valid else "f1"
+    return max(results, key=lambda x: x[sort_key])
+\end{lstlisting}
+
+\subsection*{File: rf\_cv.py}
+
+\begin{lstlisting}[style=pythonstyle]
+"""
+Manual 3-fold cross-validation for Random Forest.
+Uses StratifiedKFold only for index generation; training/prediction/metrics are manual.
+"""
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import StratifiedKFold
+from src.metrics_utils import compute_metrics
+
+def run_manual_3fold_cv(X, y, n_estimators, max_features, min_samples_leaf, random_state=42):
+    skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=random_state)
+    fold_results = []
+    for fold_num, (train_idx, test_idx) in enumerate(skf.split(X, y), start=1):
+        if hasattr(X, "iloc"):
+            X_train_fold, X_test_fold = X.iloc[train_idx], X.iloc[test_idx]
+            y_train_fold, y_test_fold = y.iloc[train_idx], y.iloc[test_idx]
+        else:
+            X_train_fold, X_test_fold = X[train_idx], X[test_idx]
+            y_train_fold, y_test_fold = y[train_idx], y[test_idx]
+        clf = RandomForestClassifier(n_estimators=n_estimators, max_features=max_features,
+            min_samples_leaf=min_samples_leaf, random_state=random_state, n_jobs=-1)
+        clf.fit(X_train_fold, y_train_fold)
+        y_pred = clf.predict(X_test_fold)
+        metrics = compute_metrics(y_test_fold, y_pred)
+        fold_results.append({"fold": fold_num,
+            "train_class_0": int((y_train_fold == 0).sum()), "train_class_1": int((y_train_fold == 1).sum()),
+            "test_class_0": int((y_test_fold == 0).sum()), "test_class_1": int((y_test_fold == 1).sum()),
+            "accuracy": metrics["accuracy"], "precision": metrics["precision"],
+            "recall": metrics["recall"], "f1": metrics["f1"], "confusion_matrix": metrics["confusion_matrix"]})
+    return fold_results
+
+def cv_results_to_dataframe(results):
+    return pd.DataFrame([{"fold": r["fold"], "train_class_0": r["train_class_0"], "train_class_1": r["train_class_1"],
+        "test_class_0": r["test_class_0"], "test_class_1": r["test_class_1"],
+        "accuracy": r["accuracy"], "precision": r["precision"], "recall": r["recall"], "f1": r["f1"]} for r in results])
+
+def summarize_cv_results(results):
+    df = cv_results_to_dataframe(results)
+    return {"mean_accuracy": df["accuracy"].mean(), "mean_precision": df["precision"].mean(),
+        "mean_recall": df["recall"].mean(), "mean_f1": df["f1"].mean(),
+        "std_accuracy": df["accuracy"].std(), "std_f1": df["f1"].std()}
+\end{lstlisting}
+
+\subsection*{File: feature\_rank.py}
+
+\begin{lstlisting}[style=pythonstyle]
+"""
+Feature importance ranking from a trained Random Forest (Gini importance).
+"""
+import pandas as pd
+
+def get_feature_importance_table(model, feature_names):
+    importance_df = pd.DataFrame({
+        "feature": feature_names,
+        "gini_importance": model.feature_importances_,
+    }).sort_values("gini_importance", ascending=False)
+    return importance_df.reset_index(drop=True)
+
+GROUND_TRUTH_GENES = ["COL5A2", "NDNF", "FAT1"]
+COL5A2_PREFIX = "COL5A2"
+
+def summarize_ground_truth_overlap(feature_df, top_n=10):
+    top = feature_df.head(top_n)
+    features_list = top["feature"].astype(str).tolist()
+    matches = {"COL5A2_family": [], "NDNF": [], "FAT1": []}
+    for f in features_list:
+        f_upper = f.upper()
+        if f_upper.startswith(COL5A2_PREFIX): matches["COL5A2_family"].append(f)
+        if "NDNF" in f_upper: matches["NDNF"].append(f)
+        if "FAT1" in f_upper: matches["FAT1"].append(f)
+    summary_parts = []
+    if matches["COL5A2_family"]: summary_parts.append("COL5A2 family: " + ", ".join(matches["COL5A2_family"]))
+    if matches["NDNF"]: summary_parts.append("NDNF: " + ", ".join(matches["NDNF"]))
+    if matches["FAT1"]: summary_parts.append("FAT1: " + ", ".join(matches["FAT1"]))
+    if not summary_parts: summary_parts.append("None of COL5A2, NDNF, FAT1 in top-ranked features.")
+    return {"matches": matches, "summary": "; ".join(summary_parts), "top_features": features_list}
+\end{lstlisting}
+
+\subsection*{File: runtime\_test.py}
+
+\begin{lstlisting}[style=pythonstyle]
+"""
+Run the best trained model on the 2 held-out verification samples.
+"""
+import pandas as pd
+
+def run_verification_predictions(model, X_verify, y_verify):
+    pred = model.predict(X_verify)
+    prob = model.predict_proba(X_verify)
+    return pd.DataFrame({
+        "true_class": y_verify.values,
+        "predicted_class": pred,
+        "prob_class_0": prob[:, 0],
+        "prob_class_1": prob[:, 1],
+        "correct": (pred == y_verify.values),
+    })
+\end{lstlisting}
+
+\subsection*{File: metrics\_utils.py}
+
+\begin{lstlisting}[style=pythonstyle]
+"""
+Metrics computation and formatting for classification.
+"""
+import pandas as pd
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
+
+DEFAULT_POS_LABEL = 1
+
+def compute_metrics(y_true, y_pred, pos_label=DEFAULT_POS_LABEL):
+    cm = confusion_matrix(y_true, y_pred)
+    return {"confusion_matrix": cm,
+        "accuracy": accuracy_score(y_true, y_pred),
+        "precision": precision_score(y_true, y_pred, pos_label=pos_label, zero_division=0),
+        "recall": recall_score(y_true, y_pred, pos_label=pos_label, zero_division=0),
+        "f1": f1_score(y_true, y_pred, pos_label=pos_label, zero_division=0)}
+
+def format_metric(value, decimals=5):
+    if isinstance(value, (int, float)):
+        return f"{value:.{decimals}f}"
+    return str(value)
+
+def confusion_matrix_to_frame(cm, index_labels=None, columns_labels=None):
+    if index_labels is None: index_labels = ["0", "1"]
+    if columns_labels is None: columns_labels = ["0", "1"]
+    return pd.DataFrame(cm, index=index_labels, columns=columns_labels)
+\end{lstlisting}
+
+\subsection*{File: report\_helpers.py}
+
+\begin{lstlisting}[style=pythonstyle]
+"""
+Helpers for saving result tables to CSV and figures.
+"""
+import pandas as pd
+from pathlib import Path
+from src.config import OUTPUT_DATA_DIR, FIGURES_DIR
+from src.metrics_utils import format_metric
+
+def save_result_table_to_csv(df, filename, output_dir=None):
+    out_dir = output_dir or OUTPUT_DATA_DIR
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / filename
+    df.to_csv(path, index=False)
+    return path
+
+def save_top10_feature_plot(feature_df, filepath=None):
+    import matplotlib.pyplot as plt
+    top10 = feature_df.head(10)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.barh(range(len(top10)), top10["gini_importance"].values, align="center")
+    ax.set_yticks(range(len(top10)))
+    ax.set_yticklabels(top10["feature"].tolist(), fontsize=9)
+    ax.invert_yaxis()
+    ax.set_xlabel("Gini importance")
+    ax.set_title("Top 10 features (Random Forest)")
+    plt.tight_layout()
+    if filepath is None:
+        FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+        filepath = FIGURES_DIR / "top10_features.png"
+    else:
+        filepath = Path(filepath)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(filepath, dpi=150, bbox_inches="tight")
+    plt.close()
+    return filepath
+\end{lstlisting}
+
+\end{document}

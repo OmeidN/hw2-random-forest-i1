@@ -2,6 +2,7 @@
 Random Forest training with Out-of-Bag (OOB) estimation.
 Grid search over hyperparameters; each model uses OOB for evaluation.
 """
+import math
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 
@@ -17,8 +18,16 @@ def run_oob_grid(X_train, y_train, random_state=42):
     """
     results = []
 
+    n_features = X_train.shape[1]
+    sqrt_n = math.sqrt(n_features)
+    # mtry: sqrt, 2×sqrt, 5×sqrt (capped at n_features), and 0.1 (10% fraction)
+    max_features_list = [
+        "sqrt",
+        min(int(2 * sqrt_n), n_features),
+        min(int(5 * sqrt_n), n_features),
+        0.1,
+    ]
     n_estimators_list = [200, 500, 1000]
-    max_features_list = ["sqrt", "log2", 0.1, 0.2]
     min_samples_leaf_list = [1, 2, 5]
 
     for n_estimators in n_estimators_list:
